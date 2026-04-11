@@ -4,7 +4,7 @@
   "version": "2.0.0",
   "identifier": "com.mohammad-diab.badclaude",
   "build": {
-    "frontendDist": ".."
+    "frontendDist": "../web"
   },
   "app": {
     "withGlobalTauri": true,

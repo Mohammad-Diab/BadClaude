@@ -24,7 +24,7 @@ This is a Tauri v2 tray app. Key files:
 - Click detection via Win32 `GetAsyncKeyState(VK_LBUTTON)` — transitions only, with a 500ms suppression window after tray interactions to prevent bleed-through
 - Cursor coordinates converted from physical screen pixels to logical window-relative pixels (accounts for DPI scaling and multi-monitor offsets)
 
-**[overlay.html](overlay.html)** — Renderer. Self-contained canvas physics simulation:
+**[web/overlay.html](web/overlay.html)** — Renderer. Self-contained canvas physics simulation:
 - Whip simulated as a Verlet-integrated chain of 28 segments (`P.segments`)
 - Handle (point 0) smoothly chases the cursor with a lerp (`P.handleSmoothing = 0.22`) so the handle carries real velocity into the chain
 - Left-click anywhere fires `crackWhip()`: a directed impulse wave through all segments (quadratic forward kick + sine-curve perpendicular bulge) + random crack sound (A–E.mp3)

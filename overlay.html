@@ -24,6 +24,7 @@ const P = {
   gravity:        1.2,   // normal gravity
   dropGravity:    0.95,    // gravity when dropping/despawning
   damping:        0.96,  // velocity retention per frame (1 = no loss)
+  handleSmoothing: 0.22, // how fast handle chases cursor (0=frozen, 1=instant snap)
   constraintIters:20,     // higher = stiffer chain
   maxStretchRatio: 1.2,  // hard cap for per-link stretch during fast whips
 
@@ -48,18 +49,12 @@ const P = {
   wallBounce:      0.42,   // velocity retained after wall hit
   wallFriction:    0.86,   // tangential damping on wall hit
 
-  // Crack detection
-  crackSpeed:     340,     // tip velocity threshold to trigger crack
-  crackCooldownMs:200,   // min ms between cracks
-  firstCrackGraceMs: 350, // no crack (macro) until this long after spawn
-
   // Visuals
   lineWidthHandle: 7,      // rope thickness near handle
   lineWidthTip:    5,      // rope thickness near tip
   outlineWidth:   3,      // white halo on each side of the stroke (approx px)
   handleExtraWidth: 5,    // added core + outline thickness on first handleThickSegments links only
   handleThickSegments: 2, // how many links from the handle get handleExtraWidth
-  bgAlpha:        0.011,  // barely-visible bg so window captures mouse events
 
   // Initial arc shape
   arcWidth:       260,    // how far right the arc extends from mouse
@@ -78,25 +73,79 @@ window.addEventListener('resize', resize);
 
 let mouseX = 0, mouseY = 0;
 let prevMouseX = 0, prevMouseY = 0;
+let handleX = 0, handleY = 0; // smoothed handle position (lags behind cursor)
 let whip = null;
 let dropping = false;
-let lastCrackTime = 0;
-let whipSpawnTime = 0;
 let handleAngle = P.baseTargetAngle;
 let handleAngVel = 0;
 
 const WHIP_CRACK_SOUNDS = ['sounds/A.mp3', 'sounds/B.mp3', 'sounds/C.mp3', 'sounds/D.mp3', 'sounds/E.mp3'];
 
-document.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
-document.addEventListener('mousedown', () => {
-  if (whip && !dropping) dropping = true;
+// Poll cursor position + click state from Rust every frame
+// (click-through windows get no DOM mouse events)
+function pollCursor() {
+  window.__TAURI__.core.invoke('get_cursor').then(pos => {
+    if (pos) {
+      prevMouseX = mouseX;
+      prevMouseY = mouseY;
+      mouseX = pos.x;
+      mouseY = pos.y;
+      if (pos.clicked) crackWhip();
+    }
+  });
+  setTimeout(pollCursor, 16);
+}
+pollCursor();
+
+function crackWhip() {
+  if (!whip || dropping) return;
+  playCrackSound();
+
+  const n = whip.length;
+
+  // Forward axis: handle → tip
+  const fx = whip[n-1].x - whip[0].x;
+  const fy = whip[n-1].y - whip[0].y;
+  const flen = Math.hypot(fx, fy) || 1;
+  const fdx = fx / flen, fdy = fy / flen;
+
+  // Perpendicular axis (for the loop bulge in the middle)
+  const pdx = -fdy, pdy = fdx;
+
+  // Drive the whole whip:
+  //   forward component grows quadratically toward tip (tip snaps hardest)
+  //   perpendicular component peaks in the middle (creates the crack loop)
+  for (let i = 1; i < n; i++) {
+    const t = i / (n - 1); // 0 = near handle, 1 = tip
+    const fKick = t * t * 320;                   // forward — quadratic
+    const pKick = Math.sin(t * Math.PI) * 130;   // sideways — sine peak at mid
+    whip[i].px = whip[i].x - fdx * fKick - pdx * pKick;
+    whip[i].py = whip[i].y - fdy * fKick - pdy * pKick;
+  }
+
+  // Thrust the handle forward so the whole whip lunges
+  handleX += fdx * 70;
+  handleY += fdy * 70;
+}
+
+// Spawn immediately — physics runs even while hidden, whip is ready when window shows
+whip = spawnWhip(W / 2, H / 2);
+
+// Re-spawn at cursor when Rust signals the window has been shown
+window.__TAURI__.event.listen('spawn-whip', () => {
+  whip = spawnWhip(mouseX || W / 2, mouseY || H / 2);
+  dropping = false;
+  prevMouseX = mouseX;
+  prevMouseY = mouseY;
+  handleAngle = P.baseTargetAngle;
+  handleAngVel = 0;
 });
 
 // ── Whip creation ───────────────────────────────────────────────────────────
 function spawnWhip(mx, my) {
   dropping = false;
-  lastCrackTime = 0;
-  whipSpawnTime = Date.now();
+  handleX = mx;
+  handleY = my;
   const pts = [];
   for (let i = 0; i < P.segments; i++) {
     const t = i / (P.segments - 1);
@@ -313,12 +362,16 @@ function update() {
     p.y += vy + g;
   }
 
-  // Pin handle to mouse
+  // Chase cursor with smoothing — keeping px as the prior position gives the
+  // handle real velocity so energy flows naturally down the chain.
   if (!dropping) {
-    whip[0].x = mouseX;
-    whip[0].y = mouseY;
-    whip[0].px = mouseX;
-    whip[0].py = mouseY;
+    const prevHX = handleX, prevHY = handleY;
+    handleX += (mouseX - handleX) * P.handleSmoothing;
+    handleY += (mouseY - handleY) * P.handleSmoothing;
+    whip[0].px = prevHX;
+    whip[0].x  = handleX;
+    whip[0].py = prevHY;
+    whip[0].y  = handleY;
   }
 
   // Prevent rubber-band stretching spikes before constraints.
@@ -353,24 +406,12 @@ function update() {
     applyWallCollisions();
   }
 
-  // Tip velocity for crack detection
-  const tip = whip[whip.length - 1];
-  const tipVel = Math.hypot(tip.x - tip.px, tip.y - tip.py);
-
-  if (!dropping && tipVel > P.crackSpeed) {
-    const now = Date.now();
-    if (now - whipSpawnTime >= P.firstCrackGraceMs && now - lastCrackTime > P.crackCooldownMs) {
-      lastCrackTime = now;
-      playCrackSound();
-      window.bridge.whipCrack();
-    }
-  }
 
   // If dropping, check if everything fell off screen
   if (dropping && whip.every(p => p.y > H + 60)) {
     whip = null;
     dropping = false;
-    window.bridge.hideOverlay();
+    window.__TAURI__.core.invoke('hide_overlay');
   }
   prevMouseX = mouseX;
   prevMouseY = mouseY;
@@ -379,10 +420,6 @@ function update() {
 // ── Rendering ───────────────────────────────────────────────────────────────
 function draw() {
   ctx.clearRect(0, 0, W, H);
-
-  // Near-invisible fill so the window captures mouse events on Windows
-  ctx.fillStyle = `rgba(0,0,0,${P.bgAlpha})`;
-  ctx.fillRect(0, 0, W, H);
 
   if (!whip) return;
 
@@ -435,17 +472,8 @@ function loop() {
 }
 loop();
 
-// ── IPC from main process ───────────────────────────────────────────────────
-window.bridge.onSpawnWhip(() => {
-  whip = spawnWhip(mouseX || W / 2, mouseY || H / 2);
-  dropping = false;
-  prevMouseX = mouseX;
-  prevMouseY = mouseY;
-  handleAngle = P.baseTargetAngle;
-  handleAngVel = 0;
-});
-
-window.bridge.onDropWhip(() => {
+// ── Events from Tauri main process ──────────────────────────────────────────
+window.__TAURI__.event.listen('drop-whip', () => {
   if (whip && !dropping) dropping = true;
 });
 

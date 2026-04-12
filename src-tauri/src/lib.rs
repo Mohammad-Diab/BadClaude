@@ -4,6 +4,7 @@ use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
 };
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[derive(serde::Serialize)]
 struct CursorState {
@@ -57,7 +58,7 @@ pub fn run() {
                 .expect("bundled tray icon is invalid PNG");
 
             // Right-click menu: enable/disable checkbox + quit
-            let toggle = CheckMenuItem::with_id(app, "toggle", "Enabled", true, true, None::<&str>)?;
+            let toggle = CheckMenuItem::with_id(app, "toggle", "Enabled\tCtrl+Shift+F1", true, true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&toggle, &quit])?;
 
@@ -100,8 +101,25 @@ pub fn run() {
             // Start enabled — show overlay immediately on launch
             apply_enabled(app.handle(), true);
 
+            // Global shortcut: Ctrl+Shift+F1 toggles the whip
+            let shortcut = Shortcut::new(
+                Some(Modifiers::CONTROL | Modifiers::SHIFT),
+                Code::F1,
+            );
+            let gs = app.handle().global_shortcut();
+            let _ = gs.unregister(shortcut.clone());
+            let _ = gs.on_shortcut(shortcut, |app, _shortcut, event| {
+                if event.state() == ShortcutState::Pressed {
+                    suppress_clicks(500);
+                    let enabled = !ENABLED.fetch_xor(true, Ordering::Relaxed);
+                    let _ = app.state::<ToggleItem>().0.set_checked(enabled);
+                    apply_enabled(app, enabled);
+                }
+            });
+
             Ok(())
         })
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![hide_overlay, get_cursor])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

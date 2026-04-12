@@ -1,6 +1,6 @@
 {
   "name": "badclaude",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Fork of badclaude — rewritten in Tauri v2 with improved whip physics and crack sounds",
   "license": "MIT",
   "os": [
